@@ -36,25 +36,22 @@ class extendedKalmanFilter():
 
     def __init__(self, x, P, F, H, Q, R):
         
-        self.x = x#当前帧状态？
-        self.x_ = np.zeros(6)#预测的下一帧状态
-        self.P = P#当前协方差
-        self.F = F#
+        self.x = x
+        self.x_ = np.zeros(6)
+        self.P = P
+        self.F = F
         self.H = H
-        #self.h = h
         self.Q = Q
         self.R = R
         self.I = np.eye(6)
     
 
     def prediction(self):
-        # Prediction step
-        self.x_ = self.F.dot(self.x)#预测状态
-        self.P = self.F.dot(self.P).dot(self.F.T) + self.Q#预测协方差
+        self.x_ = self.F.dot(self.x)
+        self.P = self.F.dot(self.P).dot(self.F.T) + self.Q
 
     def update(self, obs, h_mat):
-        #obs应该是相机坐标系下的质心3d坐标
-        x = self.x_[0]#取出预测阶段预测的新帧的x，y，z坐标;这里应该是世界坐标系下的
+        x = self.x_[0]
         y = self.x_[1]
         z = self.x_[2]
 
@@ -70,16 +67,16 @@ class extendedKalmanFilter():
 
         '''
 
-        self.H[0:3,0:3] = h_mat[0:3,0:3]#相机位姿的旋转矩阵
+        self.H[0:3,0:3] = h_mat[0:3,0:3]
 
         # Update step
-        b = h_mat.dot(np.array([[x,y,z,1]]).T)[0:3,:]#预测的类中心的3d点转到旋耕机坐标系下,和add_object函数里的不同这里的h_mat应该是Tcw
+        b = h_mat.dot(np.array([[x,y,z,1]]).T)[0:3,:]
 
         
-        y = obs - np.array([b[0,0], b[1,0], b[2,0]])#观测:（分割出）的类中心点-预测的
+        y = obs - np.array([b[0,0], b[1,0], b[2,0]])
 
-        S = self.R + self.H.dot(self.P).dot(self.H.T)#计算新息
-        K = self.P.dot(self.H.T).dot(inv(S))#计算卡尔曼增益
+        S = self.R + self.H.dot(self.P).dot(self.H.T)
+        K = self.P.dot(self.H.T).dot(inv(S))
 
-        self.x = self.x_ + K.dot(y)#更新阶段更新当前帧的状态
-        self.P = (self.I-K.dot(self.H)).dot(self.P)#.dot((self.I-K.dot(self.H)).T)+K.dot(self.R).dot(K.T) 更新当前帧的协方差
+        self.x = self.x_ + K.dot(y)
+        self.P = (self.I-K.dot(self.H)).dot(self.P)

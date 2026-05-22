@@ -20,21 +20,18 @@ from gaussian_splatting.utils.graphics_utils import fov2focal, getWorld2View2
 from detectron2.data import MetadataCatalog, DatasetCatalog
 import numpy as np
 import cv2
+
+#####EKF-Filter######
 peopleid=0
 class edm():
     def __init__(self,config):
-        self._max_inactive_frames = 10  # Maximum nb of frames before destruction连续十帧没有在新帧里观察到已经建立的类，就会将其删除
+        self._max_inactive_frames = 10
         self.next_object_id = 0  # ID for next object
         self.objects_dict = {}
         self.var_init = 0
         self.cam_pos_qat = np.array([[0., 0., 0.], [0., 0., 0., 1.]], dtype=object)
-        # self.cam_pos_qat = np.array([[0., 0., 0.], [0., 0., 0., 1.]])
         self.cam_pos = np.array([[0., 0., 0.], [0., 0., 0.]])
-
         self.dilatation = 1
-        # self.score_threshold = 0.1
-        # self.max_number_observation = 5
-        # self.human_threshold = 0.01
         self.human_threshold = 0.001
         self.object_threshold = 0.15
         self.iou_threshold = 0.9
@@ -46,44 +43,26 @@ class edm():
         self.config=config
     def point_cloud_to_image_mask(self,point_cloud, width, height):
         X, Y, Z = point_cloud[:, 0], point_cloud[:, 1], point_cloud[:, 2]
-
-        # 使用相机内参进行投影
         u = (self.fx * X / Z + self.cx).astype(int)
         v = (self.fy * Y / Z + self.cy).astype(int)
         mask = np.zeros((height, width), dtype=int)
         valid = (u >= 0) & (u < width) & (v >= 0) & (v < height)
         mask[v[valid], u[valid]] = 1
         return mask
-
-
     def depth_to_point_cloud(self,depth):
-        # 获取深度图的尺寸
         height, width = depth.shape
-
-        # 生成像素坐标网格
         i, j = np.meshgrid(np.arange(width), np.arange(height), indexing='xy')
-
-        # 获取相机内参
         f_x, f_y =self.fx,self.fy
         c_x, c_y = self.cx,self.cy
-
-        # 计算归一化坐标
         x = (i - c_x) / f_x
         y = (j - c_y) / f_y
-
-        # 展平数组
         x = x.flatten()
         y = y.flatten()
         depth = depth.flatten()
-
-        # 计算三维点坐标
         X = x * depth
         Y = y * depth
         Z = depth
-
-        # 将三维点合并为点云
         points = np.vstack((X, Y, Z)).T
-
         return points
 
     def get_active(self, val):
@@ -151,26 +130,19 @@ class edm():
     def add_object(self, centroid, dimensions, mask_id, class_id, mask_old, rois_old, pose,depth):
         dt = 0.25
 
-        h_mat = np.linalg.inv(pose.numpy())  # 这里应该是Twc
+        h_mat = np.linalg.inv(pose.numpy())  # Twc
         depth_point=depth*mask_old.mask[:, :]
-
         point_cloud_w=None
-        # points=
         b = h_mat.dot(np.array([[centroid[0], centroid[1], centroid[2], 1]]).T)[0:3, :]
-
         y = np.array([b[0, 0], b[1, 0], b[2, 0]])
-
         x = [y[0], y[1], y[2], 0, 0, 0]
-
         P = np.eye(len(x))
-
         F = np.array([[1, 0, 0, dt, 0, 0],
                       [0, 1, 0, 0, dt, 0],
                       [0, 0, 1, 0, 0, dt],
                       [0, 0, 0, 1, 0, 0],
                       [0, 0, 0, 0, 1, 0],
                       [0, 0, 0, 0, 0, 1]])
-
         H = np.array([[0.001, 0, 0, 0, 0, 0],
                       [0, 0.001, 0, 0, 0, 0],
                       [0, 0, 0.001, 0, 0, 0]])
@@ -183,7 +155,6 @@ class edm():
             ax = 1
             ay = 1
             az = 1
-
         Q = np.array([[((dt ** 4) / 4) * (ax ** 2), 0.0, 0.0, ((dt ** 4) / 4) * (ax ** 3), 0.0, 0.0],
                       [0.0, ((dt ** 4) / 4) * (ay ** 2), 0.0, 0.0, ((dt ** 4) / 4) * (ay ** 3), 0.0],
                       [0.0, 0.0, ((dt ** 4) / 4) * (az ** 2), 0.0, 0.0, ((dt ** 4) / 4) * (az ** 3)],
@@ -211,7 +182,6 @@ class edm():
             "have_been_activate":0,
             "have_been_activate_candiate":0,
         "people_points":point_cloud_w}})
-
         self.next_object_id = self.next_object_id + 1
 
     def delete_object(self, object_id):
@@ -255,34 +225,15 @@ class edm():
                 z = mask_depth[i]
             y = (((rois[i, 3] + rois[i, 1]) / 2) - cy) * z / fy
             x = (((rois[i, 2] + rois[i, 0]) / 2) - cx) * z / fx
-
-            # Translation from point to world coord
             current_centroids.update({i: [x.cpu().numpy(), y.cpu().numpy(), z]})
             current_dimensions.update({i: [rois[i, 3] - rois[i, 1], rois[i, 2] - rois[i, 0]]})
         return current_centroids, current_dimensions
 
     def calculate_depth_mean(self, depth_image, mask, min_depth=0.05, max_depth=10.0):
-        """
-        计算掩码内的深度均值，排除深度为0和异常值的像素。
-
-        参数：
-        - depth_image: 2D numpy数组，表示深度图（单位假设为米）。
-        - mask: 2D numpy数组，表示掩码图，其中掩码区域为0，非掩码区域为1。
-        - min_depth: 过滤深度时的最小深度阈值，默认0.1米。
-        - max_depth: 过滤深度时的最大深度阈值，默认10.0米。
-
-        返回：
-        - mean_depth: 掩码区域内的深度均值。
-        """
-        # 提取掩码内的深度值
         depth_values = depth_image[mask == 1]
-
-        # 排除深度为0的像素
         valid_depth_values = depth_values[
             (depth_values > 0)]
 
-
-        # 计算均值
         if len(valid_depth_values) > 0:
             mean_depth = np.mean(valid_depth_values)
             median_depth = np.median(valid_depth_values)
@@ -293,7 +244,6 @@ class edm():
         return mean_depth, median_depth
 
     def expand_mask_based_on_depth(self, depth_image, mask, mean_depth, max_diff=0.15, expansion_size=40):
-        """基于深度均值扩展掩码区域"""
         kernel = np.ones((expansion_size, expansion_size), np.uint8)
         dilated_mask = cv2.dilate(mask.astype(np.uint8), kernel)
         refined_mask = np.zeros_like(mask, dtype=np.uint8)
@@ -301,12 +251,9 @@ class edm():
         mm = np.logical_and(dilated_mask.astype(bool), valid_depth_mask)
         mm = np.logical_or(mm, mask)
         refined_mask[mm] = 1
-
         return refined_mask
 
     def apply_depth_image_masking(self, image_in, masks,class_ids,activate_r):
-        """Apply the given mask to the image.
-        """
         import copy
         from scipy import ndimage
         image_copy = image_in
@@ -326,7 +273,7 @@ class edm():
                     if self.config["Dataset"]["refine_mask"]:
                         labeled_mask, num_features = ndimage.label(mask)
                         mask_fenkai = [np.zeros_like(mask, dtype=bool) for _ in range(
-                            num_features)]  # 遍历标记的连通区域，并生成独立的掩码
+                            num_features)]
                         for i in range(1, num_features + 1):
                             mask_fenkai[i - 1] = (labeled_mask == i)
                         for single_people_mak in mask_fenkai:
@@ -401,16 +348,14 @@ class edm():
             for i in objects_to_delete:
                 self.delete_object(i)
         else:
-            current_centroids, current_dimensions = self.mask_to_centroid(r['rois'],
-                                                                          mask_depth)
-
+            current_centroids, current_dimensions = self.mask_to_centroid(r['rois'],mask_depth)
             if not self.objects_dict:
                 if not len(current_centroids) == 0:
                     for i in range(len(current_centroids)):
                         self.add_object(current_centroids[i], current_dimensions[i], i, r['class_ids'][i],
                                         r['masks'][i], r['rois'][i], pose,depth_data)
 
-                    for i in self.objects_dict:  # 添加玩之后先传播一次
+                    for i in self.objects_dict:
                         self.objects_dict[i]["kalmanFilter"].prediction()
                         self.objects_dict[i]["kalmanFilter"].update(self.objects_dict[i]["centroid"],
                                                                     pose.numpy())
@@ -451,8 +396,7 @@ class edm():
                             self.objects_dict[objects_ids[object_id]]["kalmanFilter"].x[0:3]
                             self.objects_dict[objects_ids[object_id]]["estimatedVelocity"] = \
                             self.objects_dict[objects_ids[object_id]]["kalmanFilter"].x[3:6]
-
-                            if self.objects_dict[objects_ids[object_id]]["classID"] == peopleid:  # 创建动-静的判断阈值
+                            if self.objects_dict[objects_ids[object_id]]["classID"] == peopleid:
                                 max_threshold = self.human_threshold
                             else:
                                 max_threshold = self.object_threshold
@@ -528,6 +472,7 @@ class edm():
 
         return result_dynamic_filter_image, dynamic_filter_mask,people_mask
 
+##########SLAM Backend########
 class BackEnd(mp.Process):
     def __init__(self, config,save_dir):
         super().__init__()
@@ -548,7 +493,7 @@ class BackEnd(mp.Process):
         self.iteration_count = 0#
         self.last_sent = 0
         self.occ_aware_visibility = {}
-        self.viewpoints = {} #每一个建图用的关键帧都会存在这里
+        self.viewpoints = {}
         self.current_window = []
         self.initialized = not self.monocular
         self.keyframe_optimizers = None
@@ -658,15 +603,12 @@ class BackEnd(mp.Process):
         return render_pkg
 
     def map(self, current_window, prune=False, iters=1):
-
-        # 首先，检查当前窗口是否为空，如果为空则直接返回，不进行后续操作。
         if len(current_window) == 0:
             return
 
         viewpoint_stack = [self.viewpoints[kf_idx] for kf_idx in current_window]
         random_viewpoint_stack = []
         frames_to_optimize = self.config["Training"]["pose_window"]
-
         current_window_set = set(current_window)
         for cam_idx, viewpoint in self.viewpoints.items():
             if cam_idx in current_window_set:
@@ -807,7 +749,6 @@ class BackEnd(mp.Process):
                     == self.gaussian_update_offset
                 )
                 if update_gaussian:
-                    #temp ban
                     self.gaussians.densify_and_prune(
                         self.opt_params.densify_grad_threshold,
                         self.gaussian_th,
@@ -834,13 +775,13 @@ class BackEnd(mp.Process):
                     viewpoint = viewpoint_stack[cam_idx]
                     if viewpoint.uid == 0:
                         continue
-                    update_pose(viewpoint) #更新相机位姿
+                    update_pose(viewpoint)
         end=time.time()
         gap=end-str
-        # print(gap)
+        # print(gap) #time compute
         return gaussian_split
 
-    def reconstruction(self,frames,before_refine=True):
+    def reconstruction(self,frames,before_refine=True):#3DGS model to .ply
         from argparse import ArgumentParser, Namespace
         import open3d as o3d
         from scipy.ndimage import median_filter
@@ -877,7 +818,7 @@ class BackEnd(mp.Process):
                         setattr(group, arg[0], arg[1])
                 return group
 
-        def filter_depth_outliers(depth_map, kernel_size=3, threshold=1.0):  # 移除深度图中的离群点（outliers）
+        def filter_depth_outliers(depth_map, kernel_size=3, threshold=1.0):
             median_filtered = median_filter(depth_map, size=kernel_size)
             abs_diff = np.abs(depth_map - median_filtered)
             outlier_mask = abs_diff > threshold
@@ -930,7 +871,6 @@ class BackEnd(mp.Process):
             rendered_color = torch.clamp(image, min=0.0, max=1.0)
             rendered_depth =render_depth.detach().cpu().numpy().squeeze()
             rendered_color =rendered_color.detach()
-            # rgb通道转换一下,并转为numpy
             rendered_color = (
                    (rendered_color.permute(1, 2, 0)) * 255).cpu().numpy().astype(np.uint8)
             rendered_depth = filter_depth_outliers(
@@ -975,7 +915,6 @@ class BackEnd(mp.Process):
             )
 
             gt_image = viewpoint_cam.original_image.cuda()
-            # if iteration % 5000 == 0:
             if iteration % 50 == 0:
                 depth_map=viewpoint_cam.depth
                 view_depth = cv2.convertScaleAbs(depth_map, alpha=255.0 / depth_map.max())
@@ -983,7 +922,6 @@ class BackEnd(mp.Process):
                 color_np = image.detach().cpu().numpy().transpose(1, 2, 0)
                 depth_np=render_depth.detach().cpu().numpy()
                 depth_residual = np.abs(depth_map - depth_np)
-                # depth_residual[depth_map == 0.0] = 0.0
                 gt_color_np=gt_image.detach().cpu().numpy().transpose(1, 2, 0)
 
                 color_residual = np.abs(gt_color_np - color_np)
@@ -1080,7 +1018,7 @@ class BackEnd(mp.Process):
             msg = [tag, clone_obj(self.gaussians), self.occ_aware_visibility, keyframes]
         self.frontend_queue.put(msg)
 
-    def run(self): #开启后端进程
+    def run(self):
         if self.single_thread:
             print("use single thread")
         else:
@@ -1146,9 +1084,7 @@ class BackEnd(mp.Process):
                     )
                     self.initialize_map(cur_frame_idx, viewpoint)
                     self.push_to_frontend("init")
-
                 elif data[0] == "keyframe":
-
                     self.count_kf+=1
                     cur_frame_idx = data[1]
                     viewpoint = data[2]

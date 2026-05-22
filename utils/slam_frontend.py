@@ -151,7 +151,7 @@ class FrontEnd(mp.Process):
                 initial_depth[~valid_rgb] = 0  # Ignore the invalid rgb pixels
             return initial_depth.cpu().numpy()[0]
         initial_depth = torch.from_numpy(viewpoint.depth).unsqueeze(0)
-        initial_depth[~valid_rgb.cpu()] = 0  # Ignore the invalid rgb pixels （略无效的 RGB 像素值，并将它们的深度设置为零。）
+        initial_depth[~valid_rgb.cpu()] = 0  # Ignore the invalid rgb pixels
         return initial_depth[0].numpy()
 
     # 初始化SLAM-tracker
@@ -171,22 +171,8 @@ class FrontEnd(mp.Process):
         self.reset = False
     def tracking(self, cur_frame_idx, viewpoint):
         prev = self.cameras[cur_frame_idx - self.use_every_n_frames]
-        if cur_frame_idx!=-10:
-        # if cur_frame_idx <3:
-            viewpoint.update_RT(prev.R, prev.T)
-        else:
-            prevpre = self.cameras[cur_frame_idx - self.use_every_n_frames- self.use_every_n_frames]
-            T_w2c1 = torch.eye(4, device=viewpoint.device)
-            T_w2c1[0:3, 0:3] = prev.R
-            T_w2c1[0:3, 3] = prev.T
-            T_w2c2 = torch.eye(4, device=viewpoint.device)
-            T_w2c2[0:3, 0:3] = prevpre.R
-            T_w2c2[0:3, 3] = prevpre.T
-            a=torch.linalg.inv(T_w2c2)@T_w2c1
-            T_w2c=T_w2c1@a
-            R_assum=T_w2c[0:3,0:3]
-            T_assum=T_w2c[0:3, 3]
-            viewpoint.update_RT(R_assum, T_assum)
+        viewpoint.update_RT(prev.R, prev.T)
+
         opt_params = []
         opt_params.append(
             {
@@ -218,13 +204,13 @@ class FrontEnd(mp.Process):
             }
         )
 
-        # 用 Adam 优化器来优化相机的姿态参数。
         pose_optimizer = torch.optim.Adam(opt_params)
-        # 循环执行跟踪迭代次数。
         converged_num=0
         track_mask_dict = None
         height=self.config["Dataset"]["Calibration"]["height"]
         width=self.config["Dataset"]["Calibration"]["width"]
+
+        #### Determine where the boundary weights in the adaptive weights start to decrease #####
         if self.config["Tracking"]["edg_filter"] and len(self.current_window) >=2:
             pcd_point =self.newgs_xyz
             cur_frame_Tcw = getWorld2View2(viewpoint.R,
@@ -235,9 +221,9 @@ class FrontEnd(mp.Process):
             points_in_curkf = cur_frame_Tcw @ pcd_point_con
             points_in_curkf = points_in_curkf[:, :3]
             K = np.array([[viewpoint.fx, .0, viewpoint.cx], [.0, viewpoint.fy, viewpoint.cy], [.0, .0, 1.0]]).reshape(3, 3)
-            uv = K @ points_in_curkf  # 内参投影
+            uv = K @ points_in_curkf
             z_curkf = uv[:, -1:] + 1e-5
-            uv = uv[:, :2] / z_curkf  # 转为像素坐标
+            uv = uv[:, :2] / z_curkf
             uv = uv.astype(np.int32).squeeze()
             min_x = np.min(uv[:, 0])
             max_x = np.max(uv[:, 0])
@@ -269,7 +255,6 @@ class FrontEnd(mp.Process):
             # print("select edg mask x mask is %d, y maks is %d"%(left_right_border,top_bottom_border))
 
         for tracking_itr in range(self.tracking_itr_num):
-            #  调用 render 函数，生成渲染的图像、深度和不透明度信息。
             torch.cuda.empty_cache()  # Add this line to clear CUDA cache and free memory
             render_pkg = render(
                 viewpoint, self.gaussians, self.pipeline_params, self.background
@@ -279,19 +264,19 @@ class FrontEnd(mp.Process):
                 render_pkg["depth"],
                 render_pkg["opacity"],
             )
-            pose_optimizer.zero_grad() #梯度清零。
+            pose_optimizer.zero_grad()
 
             loss_tracking = get_loss_tracking(
                 self.config, image, depth, opacity, viewpoint, track_mask_dict, curid=cur_frame_idx,
                 handle_dynamic=self.config["Tracking"]["handle_dynamic"]
             )
-            loss_tracking.backward()#反向传播，计算梯度。
+            loss_tracking.backward()
 
             with torch.no_grad():
-                pose_optimizer.step() #更新参数，尝试使损失函数最小化。
-                converged = update_pose(viewpoint) #更新相机的姿态。
+                pose_optimizer.step()
+                converged = update_pose(viewpoint)
 
-            if tracking_itr % 10 == 0: #每隔10次迭代，将当前帧的信息传递给gui。发送到 q_main2vis 队列中，用于可视化。
+            if tracking_itr % 10 == 0: #for gui
                 self.q_main2vis.put(
                     gui_utils.GaussianPacket(
                         current_frame=viewpoint,
@@ -303,15 +288,14 @@ class FrontEnd(mp.Process):
                 )
             converged_num+=1
 
-            if converged or converged_num==80: #如果收敛了，就退出
-                # if cur_frame_idx % 1 == 0:
-                #     print("frame id " + str(cur_frame_idx) + " converged_num :" + str(tracking_itr) + "window: " + str(
-                #         self.current_window))
+            if converged or converged_num==80:
                 if not converged:
                     print("not converge frame id " + str(cur_frame_idx))
                     self.notconver_num+=1
                 else:
                     self.notconver_num=0
+
+                #####Save the rendered frames in the tracking process#####
                 store_vis_in_track=self.config["Tracking"]["store_vis_in_track"]
                 if store_vis_in_track and cur_frame_idx%20==0:
                     image, visibility_filter, radii, render_depth = (
@@ -326,16 +310,11 @@ class FrontEnd(mp.Process):
                     depth_np = render_depth.detach().cpu().numpy()
                     depth_residual = np.abs(depth_map - depth_np)
                     gt_color_np = gt_image.detach().cpu().numpy().transpose(1, 2, 0)
-
                     color_residual = np.abs(gt_color_np - color_np)
-
                     gt_depth_np = depth_map
-                    # if cur_frame_idx==220:
-                    #     print()
                     fig, axs = plt.subplots(2, 3)
                     fig.tight_layout()
                     max_depth = np.max(gt_depth_np)
-
                     gt_color_np = np.clip(gt_color_np, 0, 1)
                     color_np = np.clip(color_np, 0, 1)
                     color_residual = np.clip(color_residual, 0, 1)
@@ -369,7 +348,6 @@ class FrontEnd(mp.Process):
 
                     plt.subplots_adjust(wspace=0, hspace=0)
                     visname=self.config["Dataset"]["vis_name"]
-                    # name = "viewweight/" + f'{cur_frame_idx:05d}.jpg'
                     name="vis_"+visname+"/"+f'{cur_frame_idx:05d}.jpg'
                     plt.savefig(name, bbox_inches='tight', pad_inches=0.2, dpi=300)
                     plt.cla()
@@ -378,9 +356,9 @@ class FrontEnd(mp.Process):
                 break
 
 
-        self.median_depth,self.median_depth2 = get_median_depth(depth, opacity) #计算深度图的中值深度。
+        self.median_depth,self.median_depth2 = get_median_depth(depth, opacity)
 
-        return render_pkg,converged_num #返回渲染包（render_pkg），其中包含了渲染的图像、深度和不透明度。
+        return render_pkg,converged_num
 
     def is_keyframe(
         self,
@@ -399,11 +377,6 @@ class FrontEnd(mp.Process):
         last_kf_CW = getWorld2View2(last_kf.R, last_kf.T)
         last_kf_WC = torch.linalg.inv(last_kf_CW)
 
-        # rotation_scale_factor = 2.0  # 旋转缩放因子
-        # modified_pose_CW = pose_CW.clone()
-        # modified_pose_CW[0:3, 0:3] *= rotation_scale_factor
-        # dist = torch.norm((modified_pose_CW @ last_kf_WC)[0:3, 3])
-
         dist = torch.norm((pose_CW @ last_kf_WC)[0:3, 3])
         dist_check = dist > kf_translation * self.median_depth
         dist_check2 = dist > kf_min_translation * self.median_depth
@@ -418,12 +391,8 @@ class FrontEnd(mp.Process):
         return (point_ratio_2 < kf_overlap and dist_check2) or dist_check
 
 
-    def add_to_window2(
-        self, cur_frame_idx, cur_frame_visibility_filter, occ_aware_visibility, window
-    ):
-
+    def add_to_window2(self, cur_frame_idx, cur_frame_visibility_filter, occ_aware_visibility, window):# Visibility-aware Keyframing
         def get_samples( n, H, W, fx, fy, cx, cy, c2ws,  people_mask,device):
-
             c2ws = c2ws.unsqueeze(0)
             if people_mask is not None:
                 people_mask=torch.from_numpy(people_mask).to(device)
@@ -444,8 +413,6 @@ class FrontEnd(mp.Process):
                 def get_rays_from_uv(i, j, c2ws, H, W, fx, fy, cx, cy, device):
                     dirs = torch.stack([(i - cx) / fx, (j - cy) / fy, torch.ones_like(i, device=device)], -1)
                     dirs = dirs.unsqueeze(-2)
-                    # Rotate ray directions from camera frame to the world frame
-                    # dot product, equals to: [c2w.dot(dir) for dir in dirs]
                     rays_d = torch.sum(dirs * c2ws[:, None, :3, :3], -1)
                     rays_o = c2ws[:, None, :3, -1].expand(rays_d.shape)
                     return rays_o, rays_d
@@ -454,12 +421,6 @@ class FrontEnd(mp.Process):
                 return  rays_o_noseen.reshape(-1, 3), rays_d_noseen.reshape(-1, 3)
 
         def transform_rays_to_frames_batch( rays, T_batch,device):
-            """
-            将射线从当前帧变换到其他多个帧。
-            rays: 射线向量，形状为 (n, 3)
-            T_batch: 当前帧到目标帧的变换矩阵，形状为 (batch_size, 4, 4)
-            返回变换后的射线向量，形状为 (batch_size, n, 3)
-            """
             # rays=rays.to(self.device)
             n = rays.shape[0]
 
@@ -472,28 +433,17 @@ class FrontEnd(mp.Process):
             # transformed_rays =rays_h
             rays_h = rays_h.transpose(0, 1)
             rays_expanded = rays_h.expand(batch_size, -1, -1)
-            # 进行变换
             # transformed_rays = torch.bmm(T_batch, rays_h.permute(0, 2, 1)).permute(0, 2, 1)  # (batch_size, n, 4)
             transformed_rays = torch.matmul(T_batch, rays_expanded.transpose(1, 2))  # Tc2w*ray_w
             transformed_rays = transformed_rays.transpose(1, 2)
-            # 返回变换后的射线方向（去掉齐次坐标）
             return transformed_rays[:, :, :3]
 
         def compute_mask_ratio(rays_o_noseen,rays_d_noseen,w2cs,K,H,W,keyframes_peoplemasks_nolast,device):
             rays_nopeople = rays_o_noseen[..., None, :] + rays_d_noseen[..., None, :] * 2  # 100,1,3
-
             transformed_rays = transform_rays_to_frames_batch(rays_nopeople, w2cs,device)  # 采样的射线在其他帧坐标系下的三维值
-
-            # near2 = 1
-            # far2 = 4
-            # t_vals2 = torch.linspace(0., 1., steps=num_samples-1).to(device)
-            # z_vals2 = near2 * (1. - t_vals2) + far2 * (t_vals2)
-            # rays_nopeople = rays_o_noseen[..., None, :] + rays_d_noseen[..., None, :] * z_vals2[..., :, None]  # [num_rays, num_samples, 3]
             rays_nopeople2 = rays_nopeople.reshape(1, -1, 3)
-
             ones2 = torch.ones_like(rays_nopeople2[..., 0], device=device).reshape(1, -1, 1)
-            homo_pts2 = torch.cat([rays_nopeople2, ones2], dim=-1).reshape(1, -1, 4, 1).expand(w2cs.shape[0], -1, -1,
-                                                                                               -1)
+            homo_pts2 = torch.cat([rays_nopeople2, ones2], dim=-1).reshape(1, -1, 4, 1).expand(w2cs.shape[0], -1, -1,-1)
             w2cs_exp2 = w2cs.unsqueeze(1).expand(-1, homo_pts2.shape[1], -1, -1)  # [n_frames,n_points,4,4]
             cam_cords_homo2 = w2cs_exp2 @ homo_pts2
             cam_cords2 = cam_cords_homo2[:, :, :3]
@@ -501,30 +451,27 @@ class FrontEnd(mp.Process):
 
             uv_people = K @ transformed_rays.unsqueeze(3)
             z_people = uv_people[:, :, -1:] + 1e-5
-            uv_people = uv_people[:, :, :2] / z_people  ##射线在其他帧坐标系下的像素值
+            uv_people = uv_people[:, :, :2] / z_people
             u_noseen = uv_people[..., 0, 0].long()  # 形状为 [n_f, n_p]
             v_noseen = uv_people[..., 1, 0].long()
 
             mask_noseen = (uv_people[:, :, 0] < W - edge) * (uv_people[:, :, 0] > edge) * \
                           (uv_people[:, :, 1] < H - edge) * (uv_people[:, :, 1] > edge)  ##[n_frames,n_points,1]
-            # mask_noseen = mask_noseen(z_people[:, :, 0] < 0)   # 这里注意一下，前面给z的是深度的负数值
+
             mask_noseen = mask_noseen & (z_people[:, :, 0] > 0)
             mask_noseen = mask_noseen.squeeze(-1)
 
             mask_people_noseen = torch.zeros((mask_noseen.shape[0], mask_noseen.shape[1]), dtype=torch.bool,
-                                             device=device)  # 初始化一个全为false的人掩码
+                                             device=device)
 
             valid_indices_noseen = mask_noseen.nonzero(as_tuple=True)
-            # a=valid_indices_noseen[0]
-            # b=v_noseen[valid_indices_noseen]
-            # c=u_noseen[valid_indices_noseen]
             mask_people_noseen[valid_indices_noseen] = keyframes_peoplemasks_nolast[valid_indices_noseen[0], v_noseen[valid_indices_noseen],
                                                                                     u_noseen[valid_indices_noseen]]
             mask_noseen_considerpeople = mask_noseen & mask_people_noseen  # 重要度排序，图片中非人区域的点在其他帧的非人
             percent_inside_noseen_considerpeople = mask_noseen_considerpeople.sum(dim=1) / uv_people.shape[1]
             return percent_inside_noseen_considerpeople
 
-        N_dont_touch = 2#确保最新加入的两关键帧在窗口中不会被移除
+        N_dont_touch = 2
         window = [cur_frame_idx] + window
         # remove frames which has little overlap with the current frame
         curr_frame = self.cameras[cur_frame_idx]
@@ -536,10 +483,12 @@ class FrontEnd(mp.Process):
             H=self.config["Dataset"]["Calibration"]["height"]
             W=self.config["Dataset"]["Calibration"]["width"]
 
+            ####Sampling in the obscured area#####
             rays_o_noseen,rays_d_noseen=get_samples(self.config["Training"]["rays_num_dynamicmask"],H,W,curr_frame.fx,curr_frame.fy,curr_frame.cx,curr_frame.cy,kf_0_WC,current_mask,curr_frame.device)
             K = torch.tensor([[curr_frame.fx, .0, curr_frame.cx], [.0, curr_frame.fy, curr_frame.cy],
                               [.0, .0, 1.0]], device=curr_frame.device).reshape(3, 3)
 
+        ######covisibility in static region#######
         w2c_list_nolast=[]
         keyframes_peoplemasks_nolast_list=[]
         percent_covisibility_list=[]
@@ -548,12 +497,12 @@ class FrontEnd(mp.Process):
             # szymkiewicz–simpson coefficient
             intersection = torch.logical_and(
                 cur_frame_visibility_filter, occ_aware_visibility[kf_idx]
-            ).count_nonzero()#通过逻辑与计算当前地图中高斯点在两个关键帧中都可见的点的数目
+            ).count_nonzero()
             denom = min(
                 cur_frame_visibility_filter.count_nonzero(),
                 occ_aware_visibility[kf_idx].count_nonzero(),
-            )#当前地图中高斯点在两个帧中可见个数，取较小的一个帧
-            point_ratio_2 = intersection / denom#两个掩码重叠区域（交集）相对于较小可见区域的比率。
+            )
+            point_ratio_2 = intersection / denom
             cut_off = (
                 self.config["Training"]["kf_cutoff"]
                 if "kf_cutoff" in self.config["Training"]
@@ -577,43 +526,20 @@ class FrontEnd(mp.Process):
         if len(window) > self.config["Training"]["window_size"]:
             w2cs_nolast = torch.stack(w2c_list_nolast, dim=0)
             keyframes_peoplemasks_nolast = torch.stack(keyframes_peoplemasks_nolast_list, dim=0)
+
+            ######complementarity in dynamic region#######
             percent_inside_noseen_considerpeople = compute_mask_ratio(rays_o_noseen, rays_d_noseen, w2cs_nolast, K, H,
                                                                       W, keyframes_peoplemasks_nolast,
                                                                       curr_frame.device)
+
             percent_covisibility = torch.stack(percent_covisibility_list)
             percent_important = percent_inside_noseen_considerpeople * 0.5 + percent_covisibility * 0.5
             _, selected_indice = torch.topk(percent_important, 1, largest=False, sorted=True)
             removed_frame = window[N_dont_touch +selected_indice]
             window.remove(removed_frame)
-
-
-            # # we need to find the keyframe to remove...(origin_MonoGS)
-            # inv_dist = []
-            # for i in range(N_dont_touch, len(window)):
-            #     inv_dists = []
-            #     kf_i_idx = window[i]
-            #     kf_i = self.cameras[kf_i_idx]
-            #     kf_i_CW = getWorld2View2(kf_i.R, kf_i.T)
-            #     for j in range(N_dont_touch, len(window)):
-            #         if i == j:
-            #             continue
-            #         kf_j_idx = window[j]
-            #         kf_j = self.cameras[kf_j_idx]
-            #         kf_j_WC = torch.linalg.inv(getWorld2View2(kf_j.R, kf_j.T))
-            #         T_CiCj = kf_i_CW @ kf_j_WC
-            #         inv_dists.append(1.0 / (torch.norm(T_CiCj[0:3, 3]) + 1e-6).item())
-            #     T_CiC0 = kf_i_CW @ kf_0_WC
-            #     k = torch.sqrt(torch.norm(T_CiC0[0:3, 3])).item()
-            #     inv_dist.append(k * sum(inv_dists))
-            #
-            # idx = np.argmax(inv_dist)
-            # removed_frame = window[N_dont_touch + idx]
-            # window.remove(removed_frame)
-
         return window, removed_frame
-    def add_to_window(
-        self, cur_frame_idx, cur_frame_visibility_filter, occ_aware_visibility, window
-    ):
+
+    def add_to_window(self, cur_frame_idx, cur_frame_visibility_filter, occ_aware_visibility, window):#original strategy
         N_dont_touch = 2
         window = [cur_frame_idx] + window
         # remove frames which has little overlap with the current frame
@@ -671,6 +597,7 @@ class FrontEnd(mp.Process):
             window.remove(removed_frame)
 
         return window, removed_frame
+
     def request_keyframe(self, cur_frame_idx, viewpoint, current_window, depthmap):
         msg = ["keyframe", cur_frame_idx, viewpoint, current_window, depthmap]
         self.backend_queue.put(msg)
@@ -685,7 +612,6 @@ class FrontEnd(mp.Process):
         self.backend_queue.put(msg)
         self.requested_init = True
 
-    # 这个方法将传递的数据中的高斯模型、可见性信息和关键帧信息分别赋值给前端的对应属性。然后遍历关键帧信息列表，对于每个关键帧，更新相应的相机参数。
     def sync_backend(self, data):
         self.gaussians = data[1]
         occ_aware_visibility = data[2]
@@ -701,8 +627,7 @@ class FrontEnd(mp.Process):
             torch.cuda.empty_cache()
 
     def run(self):
-        cur_frame_idx = 0 #初始化当前帧的索引为 0
-        # 获取投影矩阵（三维点到像素坐标系上）
+        cur_frame_idx = 0
         projection_matrix = getProjectionMatrix2(
             znear=0.01,
             zfar=100.0,
@@ -713,26 +638,26 @@ class FrontEnd(mp.Process):
             W=self.dataset.width,
             H=self.dataset.height,
         ).transpose(0, 1)
-        projection_matrix = projection_matrix.to(device=self.device) #将投影矩阵转移到GPU上
+        projection_matrix = projection_matrix.to(device=self.device)
         tic = torch.cuda.Event(enable_timing=True)
         toc = torch.cuda.Event(enable_timing=True)
 
         while True:
-            if self.q_vis2main.empty(): #如果gui队列为空
+            if self.q_vis2main.empty():
                 if self.pause:
                     continue
             else:
                 data_vis2main = self.q_vis2main.get()
                 self.pause = data_vis2main.flag_pause
                 if self.pause:
-                    self.backend_queue.put(["pause"]) #如果gui暂停了，那么就通知后端暂停
+                    self.backend_queue.put(["pause"])
                     continue
                 else:
                     self.backend_queue.put(["unpause"])
 
-            if self.frontend_queue.empty(): #如果前端队列为空
-                tic.record() #记录当前时间，用于计算处理时间。
-                if cur_frame_idx >= len(self.dataset): #如果当前帧的索引大于数据集的长度，也就是遍历完了~
+            if self.frontend_queue.empty():
+                tic.record()
+                if cur_frame_idx >= len(self.dataset):
                     if self.save_results:
                         eval_ate(
                             self.cameras,
@@ -747,35 +672,28 @@ class FrontEnd(mp.Process):
                         )
                     break
 
-                #检查是否有初始化请求
                 if self.requested_init: 
                     time.sleep(0.01)
                     continue
-                
-                # 检查是否处于单线程模式且有请求的关键帧。
+
                 if self.single_thread and self.requested_keyframe > 0:
                     time.sleep(0.01)
                     continue
-                
-                # 检查是否未初始化且有请求的关键帧。
+
                 if not self.initialized and self.requested_keyframe > 0:
                     time.sleep(0.01)
                     continue
-                
-                #从数据集中获取当前帧的图像、深度图和位姿等数据(viewpoint)。 
+
                 viewpoint = Camera.init_from_dataset(
                     self.dataset, cur_frame_idx, projection_matrix
                 )
-                # from PIL import Image
-                # pp=self.dataset.depth_paths[423]
-                # vpp=np.array(Image.open(pp)) / 5000.0
-                viewpoint.compute_grad_mask(self.config) #计算梯度掩码
+
+                viewpoint.compute_grad_mask(self.config)
 
 
                 color_seg_data = viewpoint.original_image
                 color_seg_data = color_seg_data.permute(1, 2, 0) * 255
                 color_seg_data = color_seg_data.cpu().numpy()  # 480,640,3 numpy
-                # outputs = self.predictor(color_seg_data)
                 semantictype=self.config["Dataset"]["semantic_type"]
                 outputs, visualized_output = self.predictor2.run_on_image(color_seg_data, semantictype)
 
@@ -786,11 +704,11 @@ class FrontEnd(mp.Process):
                     if cur_frame_idx!=-10:
                     # if cur_frame_idx <3:
                         prev = self.cameras[
-                            cur_frame_idx - self.use_every_n_frames]  # 从当前帧往回倒退 self.use_every_n_frames(设置为1就是每帧都使用) 帧，获取前一帧的相机信息作为参考。
+                            cur_frame_idx - self.use_every_n_frames]
                         R,T=prev.R, prev.T
                     else:
                         prev = self.cameras[
-                            cur_frame_idx - self.use_every_n_frames]  # 从当前帧往回倒退 self.use_every_n_frames(设置为1就是每帧都使用) 帧，获取前一帧的相机信息作为参考。
+                            cur_frame_idx - self.use_every_n_frames]
                         prevpre = self.cameras[cur_frame_idx - self.use_every_n_frames - self.use_every_n_frames]
                         T_w2c1 = torch.eye(4, device=viewpoint.device)
                         T_w2c1[0:3, 0:3] = prev.R
@@ -803,7 +721,7 @@ class FrontEnd(mp.Process):
                         R = T_w2c[0:3, 0:3]
                         T = T_w2c[0:3, 3]
 
-                time_start1 = time.time()  # 记录开始时间
+
                 W2C = torch.linalg.inv(getWorld2View2(R, T))  # Twc
                 twc_pose = W2C.cpu()
                 depth_map=viewpoint.depth
@@ -813,26 +731,6 @@ class FrontEnd(mp.Process):
                                                                                       twc_pose)  # pose means Twc
                 if self.config["Training"]["dynamic_ekf_mask"] and cur_frame_idx>2:
                     people_mask=depth_filter_mask*people_mask
-                # time_end1 = time.time()
-                # time_sum1 = time_end1 - time_start1
-                # print("seg time is "+str(time_sum1))
-
-                # # ######temp#####这是创造seg_mask 的
-                from PIL import Image
-                depth = ( depth_map.clip(0, 5) * 255).astype(np.uint8)
-                depth = np.stack((depth, depth, depth), axis=-1)
-                # image1 = Image.fromarray(depth,"RGB")
-                # image1.save('depthimage.png')
-                binary_mask = (people_mask * 255).astype(np.uint8)
-                inverted_mask = np.where(binary_mask == 255, 0, 255).astype(np.uint8)
-                image = Image.fromarray(inverted_mask, mode='L')
-                colorname=viewpoint.color_name
-                storename="seg_mask2/"+colorname
-                directory = os.path.dirname(storename)
-                if not os.path.exists(directory):
-                    os.makedirs(directory)
-                image.save(storename)
-                # # ######temp#####
 
                 # # ########################   Ablatio : n% segmentation error#########################
                 # nosie=0.6
@@ -857,65 +755,27 @@ class FrontEnd(mp.Process):
                 if self.config["Dataset"]["type"]=="scannet":
                     if self.config["Dataset"]["type2"]=="realsense":
                         depth_map[depth_map>2.5]=0
-
-                ##########temp
-                # if cur_frame_idx%1==0:
-                #     view_depth=cv2.convertScaleAbs(depth_map, alpha=255.0 / depth_map.max())
-                #     v = Visualizer(color_seg_data[:, :, ::-1], MetadataCatalog.get(self.cfg_rcnn.DATASETS.TRAIN[0]), scale=1)
-                #     out = v.draw_instance_predictions(outputs["instances"].to("cpu"))
-                #
-                #
-                #     # vistemp=out.get_image()
-                #     # plt.figure(figsize=(12, 6))  # 调整画布大小
-                #     # # 显示第一张图 (view_depth)
-                #     # plt.subplot(1, 2, 1)  # 1行2列的第1个子图
-                #     # plt.imshow(view_depth)
-                #     # plt.title("Depth Map")
-                #     # plt.axis('off')
-                #     # # 显示第二张图 (vistemp)
-                #     # plt.subplot(1, 2, 2)  # 1行2列的第2个子图
-                #     # plt.imshow(vistemp)
-                #     # plt.title("Visualization")
-                #     # plt.axis('off')
-                #     # plt.tight_layout()  # 自动调整子图间距
-                #     # plt.show()#可视化没有bounding box的分割结果（需要同时可视化bounding box只能去eslam-dynamic里找了或者重新安装cv2）
-                #     ##else  cv2安装好后可以使用下面的
-                #     cv2.imshow("Demo0", (out.get_image()[:, :, ::-1]))
-                #     cv2.imshow("Demo1", view_depth)
-                #     cv2.waitKey(0)
-                #     cv2.destroyAllWindows()
                 viewpoint.depth = depth_map
                 viewpoint.dynamic_mask = people_mask
 
-                # 将当前帧的视角（viewpoint）保存到 self.cameras 中，以便后续使用。
                 self.cameras[cur_frame_idx] = viewpoint
 
-                # 如果需要重置系统，执行以下操作：
-                if self.reset:#初始化后设置为 False。
-                    self.initialize(cur_frame_idx, viewpoint) #使用当前帧初始化系统
-                    self.current_window.append(cur_frame_idx) #将当前帧索引添加到窗口中，窗口可能用于跟踪一系列关键帧。
+                if self.reset:
+                    self.initialize(cur_frame_idx, viewpoint)
+                    self.current_window.append(cur_frame_idx)
                     cur_frame_idx += 1
                     continue
-                
-                # 如果 self.initialized 已经被设置为真（即已经初始化），那么它的值将保持不变；
-                # 如果 self.initialized 尚未被设置为真，但当前窗口中的帧数等于指定的窗口大小，则将 self.initialized 的值设置为真。
                 self.initialized = self.initialized or (
                     len(self.current_window) == self.window_size
                 )
 
                 # Tracking
 
-                render_pkg,converge_num = self.tracking(cur_frame_idx, viewpoint) #似乎是获取渲染的结果
-
-
-
-                current_window_dict = {} #创建一个空字典，用于存储当前窗口的关键帧。
-                # 将当前窗口的关键帧存储到字典中，键为当前窗口的第一个帧，值为除第一个帧之外的其余帧。
+                render_pkg,converge_num = self.tracking(cur_frame_idx, viewpoint)
+                current_window_dict = {}
                 current_window_dict[self.current_window[0]] = self.current_window[1:]
-                # 据当前窗口的关键帧索引，获取对应的关键帧摄像机信息。
                 keyframes = [self.cameras[kf_idx] for kf_idx in self.current_window]
 
-                # 将高斯包装对象放入队列 q_main2vis 中，用于可视化。这个包装对象包含克隆的高斯模型、当前帧、关键帧列表和当前窗口的字典。
                 self.q_main2vis.put(
                     gui_utils.GaussianPacket(
                         gaussians=clone_obj(self.gaussians),
@@ -924,79 +784,57 @@ class FrontEnd(mp.Process):
                         kf_window=current_window_dict,
                     )
                 )
-                
-                # 如果有请求的关键帧。
+
                 if self.requested_keyframe > 0:
-                    self.cleanup(cur_frame_idx) #清理当前帧
-                    cur_frame_idx += 1 #当前帧索引加一。
-                    continue #跳过当前循环，继续执行下一次循环。
+                    self.cleanup(cur_frame_idx)
+                    cur_frame_idx += 1
+                    continue
 
-                last_keyframe_idx = self.current_window[0] #获取当前窗口的第一个关键帧索引。
-                # 计算当前帧与上一个关键帧之间的时间间隔是否大于等于关键帧间隔。
+                last_keyframe_idx = self.current_window[0]
                 check_time = (cur_frame_idx - last_keyframe_idx) >= self.kf_interval
-                # 获取当前帧的可见性？？？
                 curr_visibility = (render_pkg["n_touched"] > 0).long()
-                # 根据一些条件判断是否创建关键帧，这些条件包括当前帧索引、上一个关键帧索引、当前帧的可见性以及其他一些参数。
-                # if converge_num<79:
-                #     check_time =check_time
-                # else:
-                #     check_time =False
-
                 create_kf = self.is_keyframe(
                     cur_frame_idx,
                     last_keyframe_idx,
                     curr_visibility,
                     self.occ_aware_visibility,
                 )
-                # 如果当前窗口的帧数小于指定的窗口大小，则将当前帧添加到窗口中。
                 if len(self.current_window) < self.window_size:
                     union = torch.logical_or(
                         curr_visibility, self.occ_aware_visibility[last_keyframe_idx]
-                    ).count_nonzero() #计算当前帧可见性和上一个关键帧的可见性的并集中非零元素的数量。
+                    ).count_nonzero()
                     intersection = torch.logical_and(
                         curr_visibility, self.occ_aware_visibility[last_keyframe_idx]
-                    ).count_nonzero() #计算当前帧可见性和上一个关键帧的可见性的交集中非零元素的数量。
-                    point_ratio = intersection / union #计算交集与并集的比值，表示当前帧在上一个关键帧的可见性范围内的点所占的比例。
-                    # 判断是否需要创建关键帧，条件是当前帧与上一个关键帧之间的时间间隔大于等于关键帧间隔，并且点的比例小于指定的阈值 kf_overlap。
+                    ).count_nonzero()
+                    point_ratio = intersection / union
                     create_kf = (
                         check_time
                         and point_ratio < self.config["Training"]["kf_overlap"]
                     )
-
-                # 如果是单线程模式
                 if self.single_thread:
-                    create_kf = check_time and create_kf #如果是单线程模式，并且满足时间间隔条件，那么就需要创建关键帧。这段代码的作用是确保在单线程模式下，即使点的比例也符合要求，依然需要创建关键帧。
+                    create_kf = check_time and create_kf
                     if self.notconver_num>=3:
                         create_kf =True
                         self.notconver_num=0
 
-                    # if create_kf:
-                    #     num_zeros = np.sum(depth_map== 0)
-                    #     total_elements = depth_map.size
-                    #     per=num_zeros / total_elements
-                        # if per>0.72:
-                        #     create_kf = False
-                        #     print("deal to zero percent, delet keyframe,percent is: "+str(per))
-
-
                 if create_kf:
+                    ############  Visibility-aware Keyframing    #########
                     if self.config["Training"]["new_keyframe_selection"]:
                         self.current_window, removed = self.add_to_window2(
                             cur_frame_idx,
                             curr_visibility,
                             self.occ_aware_visibility,
                             self.current_window,
-                        )#调用 add_to_window 方法，将当前帧添加到当前窗口中，并返回更新后的当前窗口和已移除的关键帧（如果有的话）。
+                        )
                     else:
                         self.current_window, removed = self.add_to_window(
                             cur_frame_idx,
                             curr_visibility,
                             self.occ_aware_visibility,
                             self.current_window,
-                        )  # 调用 add_to_window 方法，将当前帧添加到当前窗口中，并返回更新后的当前窗口和已移除的关键帧（如果有的话）。
-                    # 如果是单目摄像头且地图尚未初始化且已移除了关键帧，则执行以下操作。
+                        )
                     if self.monocular and not self.initialized and removed is not None:
-                        self.reset = True #将重置标志设置为True。因为如果地图尚未初始化且已移除了关键帧，那么就需要重置系统，也即需要重新初始化。
+                        self.reset = True
                         Log(
                             "Keyframes lacks sufficient overlap to initialize the map, resetting."
                         )
@@ -1006,12 +844,12 @@ class FrontEnd(mp.Process):
                         depth=render_pkg["depth"],
                         opacity=render_pkg["opacity"],
                         init=False,
-                    ) #调用 add_new_keyframe 方法，根据渲染包的深度和不透明度信息添加新的关键帧。
+                    )
                     self.request_keyframe(
                         cur_frame_idx, viewpoint, self.current_window, depth_map
-                    ) #请求添加关键帧。
+                    )
 
-                else: #如果不需要创建关键帧，那么就cleanup
+                else:
                     self.cleanup(cur_frame_idx)
 
                 cur_frame_idx += 1
@@ -1022,7 +860,7 @@ class FrontEnd(mp.Process):
                     and create_kf
                     and len(self.kf_indices) % self.save_trj_kf_intv == 0
                 ):
-                    Log("Evaluating ATE at frame: ", cur_frame_idx) #进行ATE评估，并输出当前frame的索引。
+                    Log("Evaluating ATE at frame: ", cur_frame_idx) #Evaluate ATE
                     eval_ate(
                         self.cameras,
                         self.kf_indices,
@@ -1036,12 +874,10 @@ class FrontEnd(mp.Process):
                     # throttle at 3fps when keyframe is added
                     duration = tic.elapsed_time(toc)
                     time.sleep(max(0.01, 1.0 / 3.0 - duration / 1000))
-            else:#如果前端队列不为空
-                data = self.frontend_queue.get() #从前端队列中获取数据。
-
-                # 如果数据的第一个元素是 "sync_backend"，则执行以下操作：
+            else:
+                data = self.frontend_queue.get()
                 if data[0] == "sync_backend":
-                    self.sync_backend(data) #调用 sync_backend 方法，将获取到的数据作为参数传递给该方法。
+                    self.sync_backend(data)
 
                 elif data[0] == "keyframe":
                     self.sync_backend(data)

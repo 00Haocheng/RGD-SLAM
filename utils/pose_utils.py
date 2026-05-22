@@ -100,7 +100,7 @@ def SE3_log(T):
 
 
 def skew_symmetric(v):
-    """将3维向量转换为斜对称矩阵"""
+
     return torch.tensor([
         [0, -v[2], v[1]],
         [v[2], 0, -v[0]],
@@ -109,7 +109,7 @@ def skew_symmetric(v):
 
 
 def SO3_log(R):
-    """SO(3)对数映射实现"""
+
     trace = torch.trace(R)
     theta = torch.acos(torch.clamp((trace - 1) / 2, -1, 1))
 
