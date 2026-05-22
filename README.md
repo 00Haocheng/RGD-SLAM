@@ -6,7 +6,8 @@ You can create an anaconda environment called ismap. Please install libopenexr-d
 ``` 
 conda env create -f environment.yaml
 ``` 
-We recommend following the MonoGS method for environment configuration [MonoGS](https://github.com/muskie82/MonoGS)
+We recommend following the [MonoGS](https://github.com/muskie82/MonoGS) method for SLAM environment configuration． 
+
 Then you will then need to install OneFormer to use the segmentation network. We recommend installing it from [here.](https://github.com/SHI-Labs/OneFormer)
 ## Download Dataset & Data preprocessing ##
 You can download the data as below.
@@ -24,6 +25,7 @@ To evaluate the average trajectory error. Run the command below with the corresp
 ``` 
 python slam.py --config configs/rgbd/tum/fr3_walking_halfsphere.yaml --eval
 ``` 
+This flag will automatically run system, and log the results including the rendering metrics.
 ## Acknowledgement ##
 Thanks to previous open-sourced repo: [MonoGS](https://github.com/muskie82/MonoGS), [DG-SLAM](https://github.com/fudan-zvg/DG-SLAM), [OneFormer](https://github.com/SHI-Labs/OneFormer), [dotmask](https://github.com/introlab/dotmask)
 ## Citing ##
