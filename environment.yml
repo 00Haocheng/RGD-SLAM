@@ -1,4 +1,4 @@
-name: MonoGS
+name: RGD-SLAM
 channels:
   - pytorch
   - conda-forge
