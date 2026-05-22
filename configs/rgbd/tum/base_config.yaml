@@ -1,0 +1,155 @@
+## SLAM parameters
+Results:
+  save_results: True
+  save_dir: "result"
+  save_trj: True
+  save_trj_kf_intv: 5
+  use_gui: True
+  eval_rendering: False
+  use_wandb: False
+
+Dataset:
+  using_sematic_mask: True
+  boon_type: "False"
+  type: 'tum'
+  sensor_type: 'depth'
+  pcd_downsample: 128 #2.23 use
+#  pcd_downsample: 64 #2.24 use ablation
+  pcd_downsample_init: 32
+  adaptive_pointsize: False
+  point_size: 0.015
+  single_thread: True #new104
+#  single_thread: False #new104
+  exp_size: 25 #ori
+  max_keyframe: 12
+  semantic_type: "semantic"
+#  semantic_type: "instance"
+  refine_mask: True
+  refine_mask_expansion_size: 20 #paper use
+  refine_mask_dis: 0.2 #paper use
+#  refine_mask_dis: 0.000000000005  #ablation
+#  refine_mask_expansion_size: 1 #ablation
+  refine_depth: 0.1
+  colorrefine_depth: 0.75
+
+Training:
+  #Initialization
+#  init_itr_num: 1050 #ori
+  init_itr_num: 1500
+  init_gaussian_update: 100
+  init_gaussian_reset: 500
+  init_gaussian_th: 0.005
+  init_gaussian_extent: 30
+  # Tracking and Mapping
+#  tracking_itr_num: 100 #ori
+  tracking_itr_num: 81
+#  tracking_itr_num: 2
+#  mapping_itr_num: 150 #ori
+  mapping_itr_num: 100
+#  mapping_itr_num: 3
+#  gaussian_update_every: 150
+  gaussian_update_every: 7500
+  gaussian_update_offset: 50
+#  gaussian_th: 0.7 #ori
+  gaussian_th: 0.75
+  gaussian_extent: 1.0
+#  gaussian_reset: 2001 #ori
+  gaussian_reset: 5001
+#  gaussian_reset: 7001
+  size_threshold: 20
+  kf_interval: 5
+  window_size: 8 #ori
+  pose_window: 3
+  edge_threshold: 1.1
+  rgb_boundary_threshold: 0.01
+  alpha: 0.9 #ori
+#  alpha: 0.8 #
+  kf_translation: 0.08
+  kf_min_translation: 0.05 #ori use
+#  kf_translation: 0.03
+#  kf_min_translation: 0.015 #rpy ori use
+#  kf_translation: 0.05
+#  kf_min_translation: 0.025
+
+#  kf_overlap: 0.9 #ori
+  kf_overlap: 0.95
+  kf_cutoff: 0.3
+  prune_mode: 'slam'
+#  single_thread: False #orig
+  single_thread: True
+  spherical_harmonics: False
+  min_depth: 0.95
+  rays_num_dynamicmask: 5000
+  dynamic_ekf_mask: False
+
+  new_keyframe_selection: True
+  stratified_points: True
+  make_stratified_pointssize_0: False
+  stratified-opa: False
+  stratified_points_multi: 2 #2.23 use
+#  stratified_points_multi: 0 #2.24 use ablation
+  lr:
+    cam_rot_delta: 0.003 #TRACK lr
+    cam_trans_delta: 0.001 #ori
+#    cam_rot_delta: 0.0015
+#    cam_trans_delta: 0.0005
+    BA_factor: 0.5 #ori
+#    BA_factor: 0.3
+  expolearnable: False
+Tracking:
+  store_vis_in_track: False
+  edg_filter: True
+  handle_dynamic: True
+  opacity: True
+  edg_filter_region_adaptive: True
+  min_weight: 0.4
+  max_weight: 0.8
+#  left_right_maxpixel: 100
+#  top_bottom_maxpixel: 60 #
+  #  left_right_minpixel: 20
+  #  top_bottom_minpixel: 10 #ori use in write paper
+
+  decay_type: sigmoid
+#  decay_type: exponential
+  left_right_maxpixel: 60
+  top_bottom_maxpixel: 40
+  left_right_minpixel: 1
+  top_bottom_minpixel: 1
+  handle_dynamic_depth: 10
+  handle_dynamic_color: 8
+Mapping:
+  map_edg_filter: False
+## 3DGS default parameters
+opt_params:
+  iterations: 30000
+  position_lr_init: 0.00016
+  position_lr_final: 0.0000016
+  position_lr_delay_mult: 0.01
+  position_lr_max_steps: 30000
+  feature_lr: 0.0025
+  opacity_lr: 0.05
+  scaling_lr: 0.001
+  rotation_lr: 0.001
+  percent_dense: 0.01
+  lambda_dssim: 0.2
+  densification_interval: 100
+  opacity_reset_interval: 3000
+  densify_from_iter: 500
+  densify_until_iter: 15000
+  densify_grad_threshold: 0.0002
+
+model_params:
+  sh_degree: 0
+  source_path: ""
+  model_path: ""
+  resolution: -1
+  white_background: False
+  data_device: "cuda"
+
+pipeline_params:
+  convert_SHs_python: False
+  compute_cov3D_python: False
+
+ablation:
+  noprune: False
+  noGSadd: False

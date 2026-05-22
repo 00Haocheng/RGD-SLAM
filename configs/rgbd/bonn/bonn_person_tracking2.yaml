@@ -1,0 +1,21 @@
+inherit_from: "configs/rgbd/bonn/base_config.yaml"
+
+Dataset:
+  dataset_path: "/media/ps231/data4/whc/whc_2080/whc/data_whc/nice-slam-master/Datasets/Boon/rgbd_bonn_person_tracking2"
+
+  Calibration:
+    fx: 542.822841
+    fy: 542.576870
+    cx: 315.593520
+    cy: 237.756098
+    k1: 0.039903
+    k2: -0.099343
+    p1: -0.000730
+    p2: -0.000144
+    k3: 0.0
+#    distorted: False
+    distorted: True
+    width: 640
+    height: 480
+    depth_scale: 5000.0
+  vis_name: bonn_person_track2
