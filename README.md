@@ -9,10 +9,10 @@ conda env create -f environment.yaml
 We recommend following the [MonoGS](https://github.com/muskie82/MonoGS) method for SLAM environment configuration． 
 
 Then you will then need to install OneFormer to use the segmentation network. We recommend installing it from [here.](https://github.com/SHI-Labs/OneFormer)
-## Download Dataset & Data preprocessing ##
+## Download Dataset ##
 You can download the data as below.
 ``` 
-bash scripts/download_replica.sh
+bash scripts/download_tum.sh
 ``` 
 ## Run ##
 After downloading the dataset, you can run RGD-SLAM:
